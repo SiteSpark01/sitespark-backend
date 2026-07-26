@@ -7,6 +7,16 @@ const { validateSubmission } = require("./validate");
 const { initDb, insertSubmission, markEmailSent } = require("./db");
 const { sendNotificationEmail } = require("./mailer");
 
+// Last-resort safety net — logs clearly instead of letting an unexpected
+// error crash the whole process silently (which is what a 502 with no
+// error detail usually means from the outside).
+process.on("unhandledRejection", (err) => {
+  console.error("Unhandled promise rejection:", err);
+});
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught exception:", err);
+});
+
 const app = express();
 app.use(express.json({ limit: "50kb" })); // small limit — this endpoint only ever needs a short form payload
 
@@ -54,7 +64,16 @@ app.post("/api/start-project", submitLimiter, async (req, res) => {
     ip: req.ip,
   };
 
-  const id = await insertSubmission(submission);
+  let id;
+  try {
+    id = await insertSubmission(submission);
+  } catch (err) {
+    console.error("Database insert failed:", err.message);
+    return res.status(500).json({
+      ok: false,
+      errors: ["We couldn't save your submission right now. Please try again shortly."],
+    });
+  }
 
   // The submission is saved regardless of what happens next — an email
   // failure never means the lead itself is lost.
