@@ -1,25 +1,12 @@
-const nodemailer = require("nodemailer");
+// Sends the lead-notification email via Resend's HTTPS API instead of
+// Gmail SMTP. Render's free tier blocks outbound SMTP ports, which is why
+// the old nodemailer/Gmail setup timed out on every send — Resend avoids
+// that entirely since it's a normal HTTPS call (port 443), same as any
+// other API request this server already makes.
 
-const GMAIL_USER = process.env.GMAIL_USER;
-const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD;
-const NOTIFY_TO = process.env.NOTIFY_TO || GMAIL_USER;
-
-let transporter = null;
-
-function getTransporter() {
-  if (!GMAIL_USER || !GMAIL_APP_PASSWORD) {
-    throw new Error(
-      "GMAIL_USER and GMAIL_APP_PASSWORD must be set as environment variables — never hardcode these."
-    );
-  }
-  if (!transporter) {
-    transporter = nodemailer.createTransport({
-      service: "gmail",
-      auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD },
-    });
-  }
-  return transporter;
-}
+const RESEND_API_KEY = process.env.RESEND_API_KEY;
+const RESEND_FROM = process.env.RESEND_FROM || "SiteSpark <onboarding@resend.dev>";
+const NOTIFY_TO = process.env.NOTIFY_TO;
 
 function buildEmailBody(submission) {
   return `
@@ -43,15 +30,34 @@ Reply directly to this email to respond to ${submission.name}.
  * nothing is lost even if the email send fails).
  */
 async function sendNotificationEmail(submission) {
-  const mailer = getTransporter();
+  if (!RESEND_API_KEY) {
+    throw new Error(
+      "RESEND_API_KEY must be set as an environment variable — get this from your Resend dashboard."
+    );
+  }
+  if (!NOTIFY_TO) {
+    throw new Error("NOTIFY_TO must be set as an environment variable — the address that should receive lead notifications.");
+  }
 
-  await mailer.sendMail({
-    from: `"SiteSpark" <${GMAIL_USER}>`,
-    to: NOTIFY_TO,
-    replyTo: submission.email, // reply in Gmail goes straight to the client, not back to yourself
-    subject: `New project inquiry — ${submission.name}`,
-    text: buildEmailBody(submission),
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${RESEND_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from: RESEND_FROM,
+      to: NOTIFY_TO,
+      reply_to: submission.email, // reply goes straight to the client, not back to yourself
+      subject: `New project inquiry — ${submission.name}`,
+      text: buildEmailBody(submission),
+    }),
   });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Resend API error (${res.status}): ${body || res.statusText}`);
+  }
 }
 
 module.exports = { sendNotificationEmail };
